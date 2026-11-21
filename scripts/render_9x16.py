@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render mobile-universal 720x1280@30fps 9:16 horror storybook MP4 with Omni Flash _anim.mp4 + Line Boil fallback."""
+"""Render mobile-universal 720x1280@30fps 9:16 horror storybook MP4 with 4-frame Line Boil and sample-locked subtitles."""
 
 from collections import OrderedDict
 import argparse
@@ -27,11 +27,6 @@ def ease_in_out_cubic(p: float) -> float:
     if p < 0.5:
         return 4.0 * p * p * p
     return 1.0 - ((-2.0 * p + 2.0) ** 3) / 2.0
-
-
-def smoothstep(t: float) -> float:
-    t = max(0.0, min(1.0, t))
-    return t * t * (3.0 - 2.0 * t)
 
 
 def fmt_srt_time(sec: float) -> str:
@@ -72,14 +67,9 @@ def build_gothic_scrim() -> tuple[np.ndarray, np.ndarray]:
     scrim = np.zeros((H, W), dtype=np.float32)
     bot_h = 360
     scrim[H - bot_h :, :] = ((np.linspace(0.0, 1.0, bot_h) ** 1.4) * (155.0 / 255.0))[:, None]
-
-    # Deeper lower-edge darkening ramp across bottom 110px (below y=1035 subtitles) to mask stray AI bottom haze
     edge_h = 110
-    scrim[H - edge_h :, :] = np.maximum(
-        scrim[H - edge_h :, :],
-        ((np.linspace(0.0, 1.0, edge_h) ** 1.15) * 0.92)[:, None],
-    )
-
+    edge_ramp = (np.linspace(0.0, 1.0, edge_h) ** 1.3) * 0.92
+    scrim[H - edge_h :, :] = np.maximum(scrim[H - edge_h :, :], edge_ramp[:, None])
     top_h = 180
     scrim[:top_h, :] = np.maximum(
         scrim[:top_h, :],
@@ -321,20 +311,8 @@ def apply_fx_presets(frame: np.ndarray, presets: list[str], t_sec: float, s0: fl
     np.clip(frame, 0.0, 255.0, out=frame)
 
 
-def sample_blended(frames_arr: np.ndarray, pos_f: float) -> np.ndarray:
-    """Linearly interpolate consecutive 24fps frames for smooth 30fps playback."""
-    n = len(frames_arr)
-    pos_f = max(0.0, min(float(n - 1), pos_f))
-    i0 = int(math.floor(pos_f))
-    i1 = min(n - 1, i0 + 1)
-    frac = pos_f - i0
-    if frac <= 0.001 or i0 == i1:
-        return frames_arr[i0].astype(np.float32)
-    return frames_arr[i0].astype(np.float32) * (1.0 - frac) + frames_arr[i1].astype(np.float32) * frac
-
-
 class AnimatedShotCache:
-    """Lightweight 2-shot LRU cache supporting _anim.mp4 (Omni Flash), _loop.mp4, and .gif."""
+    """Lightweight 2-shot LRU cache for true AI animations (_anim.mp4) and loop fallbacks (_loop.mp4 / .gif)."""
 
     def __init__(self, proj_dir: str, max_entries: int = 2) -> None:
         self.proj_dir = proj_dir
@@ -345,9 +323,9 @@ class AnimatedShotCache:
         anim_p = os.path.join(self.proj_dir, "shots", f"{sid}_anim.mp4")
         if os.path.exists(anim_p):
             return ("anim_mp4", anim_p)
-        loop_p = os.path.join(self.proj_dir, "shots", f"{sid}_loop.mp4")
-        if os.path.exists(loop_p):
-            return ("loop_mp4", loop_p)
+        mp4_p = os.path.join(self.proj_dir, "shots", f"{sid}_loop.mp4")
+        if os.path.exists(mp4_p):
+            return ("loop_mp4", mp4_p)
         gif_p = os.path.join(self.proj_dir, "shots", f"{sid}.gif")
         if os.path.exists(gif_p):
             return ("gif", gif_p)
@@ -362,7 +340,7 @@ class AnimatedShotCache:
         frame_bytes = 768 * 1376 * 3
         n = len(raw) // frame_bytes
         if n <= 0:
-            raise RuntimeError(f"Decoded 0 video frames from {path}")
+            raise RuntimeError(f"Decoded 0 frames from animated shot: {path}")
         return np.frombuffer(raw[: n * frame_bytes], dtype=np.uint8).reshape((n, 1376, 768, 3)).copy()
 
     def _load_entry(self, sid: str) -> tuple[str, object] | None:
@@ -384,7 +362,7 @@ class AnimatedShotCache:
                 frames.append(rgb)
         return ("loop", frames)
 
-    def _get_entry(self, sid: str) -> tuple[str, object] | None:
+    def _get_or_load(self, sid: str) -> tuple[str, object] | None:
         if sid not in self._cache:
             entry = self._load_entry(sid)
             if not entry:
@@ -396,52 +374,57 @@ class AnimatedShotCache:
             self._cache.move_to_end(sid)
         return self._cache[sid]
 
-    def is_anim_mp4(self, sid: str) -> bool:
-        src = self.find_source(sid)
-        return bool(src and src[0] == "anim_mp4")
+    @staticmethod
+    def _sample_blended(frames_arr: np.ndarray, pos_f: float) -> np.ndarray:
+        n = len(frames_arr)
+        pos_f = max(0.0, min(float(n - 1), pos_f))
+        i0 = int(math.floor(pos_f))
+        i1 = min(i0 + 1, n - 1)
+        frac = pos_f - i0
+        if frac < 1e-4 or i0 == i1:
+            return frames_arr[i0].astype(np.float32)
+        return frames_arr[i0].astype(np.float32) * (1.0 - frac) + frames_arr[i1].astype(np.float32) * frac
 
     def get_anim_mp4_frame(self, sid: str, dt_sec: float, span: float) -> tuple[Image.Image, float] | None:
-        entry = self._get_entry(sid)
+        entry = self._get_or_load(sid)
         if not entry or entry[0] != "anim_mp4":
             return None
         frames_arr: np.ndarray = entry[1]  # type: ignore[assignment]
         n = len(frames_arr)
         clip_dur = n / 24.0
-        dt = max(0.0, dt_sec)
+        dt = max(0.0, min(span, dt_sec))
 
         if span <= clip_dur * 1.45:
-            u = min(1.0, dt / max(0.1, span))
-            pos_f = u * (n - 1)
-            arr_f = sample_blended(frames_arr, pos_f)
+            u = dt / max(0.01, span)
+            arr_rgb = self._sample_blended(frames_arr, u * (n - 1))
             zoom = 1.00 + 0.03 * ease_in_out_cubic(u)
-            return Image.fromarray(np.clip(arr_f, 0.0, 255.0).astype(np.uint8), mode="RGB"), zoom
-
-        beat_len = max(0.5, span * 0.5)
-        xf = min(0.40, beat_len * 0.25)
-
-        if dt < beat_len - xf:
-            u1 = min(1.0, dt / beat_len)
-            arr_f = sample_blended(frames_arr, u1 * (n - 1))
-            zoom = 1.00 + 0.03 * ease_in_out_cubic(u1)
-        elif dt > beat_len + xf:
-            u2 = min(1.0, (dt - beat_len) / beat_len)
-            arr_f = sample_blended(frames_arr, u2 * (n - 1))
-            zoom = 1.05 + 0.04 * ease_in_out_cubic(u2)
         else:
-            w = smoothstep((dt - (beat_len - xf)) / (2.0 * xf))
-            u1 = min(1.0, dt / beat_len)
-            u2 = max(0.0, (dt - (beat_len - xf)) / beat_len)
-            f1 = sample_blended(frames_arr, u1 * (n - 1))
-            f2 = sample_blended(frames_arr, u2 * (n - 1))
-            arr_f = f1 * (1.0 - w) + f2 * w
+            beat_len = span * 0.5
+            xf = 0.40
+            u1 = max(0.0, min(1.0, dt / beat_len))
+            u2 = max(0.0, min(1.0, (dt - beat_len) / beat_len))
             z1 = 1.00 + 0.03 * ease_in_out_cubic(u1)
             z2 = 1.05 + 0.04 * ease_in_out_cubic(u2)
-            zoom = z1 * (1.0 - w) + z2 * w
 
-        return Image.fromarray(np.clip(arr_f, 0.0, 255.0).astype(np.uint8), mode="RGB"), zoom
+            if dt <= beat_len - xf:
+                arr_rgb = self._sample_blended(frames_arr, u1 * (n - 1))
+                zoom = z1
+            elif dt >= beat_len + xf:
+                arr_rgb = self._sample_blended(frames_arr, u2 * (n - 1))
+                zoom = z2
+            else:
+                w = (dt - (beat_len - xf)) / (2.0 * xf)
+                w = w * w * (3.0 - 2.0 * w)
+                f1 = self._sample_blended(frames_arr, u1 * (n - 1))
+                f2 = self._sample_blended(frames_arr, u2 * (n - 1))
+                arr_rgb = f1 * (1.0 - w) + f2 * w
+                zoom = z1 * (1.0 - w) + z2 * w
+
+        img = Image.fromarray(np.clip(arr_rgb, 0.0, 255.0).astype(np.uint8), mode="RGB")
+        return img, zoom
 
     def get_frame(self, sid: str, dt_sec: float) -> Image.Image | None:
-        entry = self._get_entry(sid)
+        entry = self._get_or_load(sid)
         if not entry or entry[0] == "anim_mp4":
             return None
         frames: list[Image.Image] = entry[1]  # type: ignore[assignment]
@@ -482,8 +465,7 @@ def main() -> None:
     boil_hold = max(1, int(boil_cfg.get("hold_frames", 6)))
 
     anim_cache = AnimatedShotCache(proj_dir, max_entries=2)
-    anim_mp4_ids = [sh["id"] for sh in shots if anim_cache.is_anim_mp4(sh["id"])]
-    loop_ids = [sh["id"] for sh in shots if not anim_cache.is_anim_mp4(sh["id"]) and anim_cache.find_source(sh["id"]) is not None]
+    animated_ids = [sh["id"] for sh in shots if anim_cache.find_source(sh["id"]) is not None]
     shot_boil = {
         sh["id"]: build_boil_variants(
             Image.open(os.path.join(proj_dir, sh["shot"])).convert("RGB"),
@@ -492,9 +474,9 @@ def main() -> None:
             wavelength=boil_wave,
         )
         for idx, sh in enumerate(shots)
-        if sh["id"] not in anim_mp4_ids and sh["id"] not in loop_ids
+        if sh["id"] not in animated_ids
     }
-    print(f"Motion config: anim_mp4={anim_mp4_ids}, loop_fallback={loop_ids}, boil=(amp={boil_amp}, wave={boil_wave}, hold={boil_hold})")
+    print(f"Motion config: animated_shots={animated_ids}, boil=(amp={boil_amp}, wave={boil_wave}, hold={boil_hold})")
     sub_overlays = {cue["id"]: build_subtitle_overlay(cue["text"]) for cue in cues}
     title_overlay = build_title_overlay(project["title_main"], project["title_tag"])
     scrim_alpha, scrim_tint = build_gothic_scrim()
@@ -529,7 +511,7 @@ def main() -> None:
         anim_mp4_res = anim_cache.get_anim_mp4_frame(sid, t_sec - s0, span)
         if anim_mp4_res is not None:
             src_variant, beat_zoom = anim_mp4_res
-            z, px, py = beat_zoom, 0.0, 0.0
+            arr = np.asarray(render_affine_shot(src_variant, beat_zoom, 0.0, 0.0), dtype=np.float32)
         else:
             u = ease_in_out_cubic((t_sec - s0) / span)
             z0, z1, px0, px1, py0, py1 = cam_moves.get(sid, DEFAULT_MOVE)
@@ -546,8 +528,8 @@ def main() -> None:
             else:
                 variants = shot_boil[sid]
                 src_variant = variants[(f_idx // boil_hold) % len(variants)]
+            arr = np.asarray(render_affine_shot(src_variant, z, px, py), dtype=np.float32)
 
-        arr = np.asarray(render_affine_shot(src_variant, z, px, py), dtype=np.float32)
         apply_fx_presets(arr, presets, t_sec, s0, s1, f_idx, masks)
         return arr
 
