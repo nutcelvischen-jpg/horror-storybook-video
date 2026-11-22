@@ -9,6 +9,11 @@ Place `<project_dir>/project.json` in your episode workspace before running `gen
   "output_basename": "怪談EPXX_故事標題_9x16",
   "title_main": "《故事主標題》",
   "title_tag": "地點標籤｜副標題懸念",
+  "boil": {
+    "amp": 0.35,
+    "wavelength": 115.0,
+    "hold_frames": 6
+  },
   "tts": {
     "model": "google/gemini-3.8-flash-tts",
     "voice": "Algenib",
@@ -16,7 +21,47 @@ Place `<project_dir>/project.json` in your episode workspace before running `gen
     "intra_cue_gap_sec": 0.22,
     "inter_scene_gap_sec": 0.45,
     "final_tail_sec": 1.40,
-    "instructions": "Speak in a deeply eerie, low, cold, breathy midnight ghost-storyteller tone with dark brooding intimacy and crisp, steady pacing. Drop quieter and more chilling on whispered quotes or eerie revelations—never cheerful, never theatrical."
+    "instructions": "Speak in a deeply eerie, low, cold, breathy midnight ghost-storyteller tone with dark brooding intimacy and crisp, steady pacing. Drop quieter and more chilling on whispered quotes or eerie revelations—never cheerful, never theatrical.",
+    "roles": {
+      "narrator": {
+        "voice": "Algenib",
+        "fallback_voice": "Charon",
+        "fx": "narrator",
+        "instructions": "Deeply eerie, low, cold, breathy midnight ghost-storyteller tone."
+      },
+      "boss_room": {
+        "voice": "Orus",
+        "fallback_voice": "Charon",
+        "fx": "warehouse_room",
+        "instructions": "Warm, grounded slightly older male speaker inside a cavernous room."
+      },
+      "boss_phone": {
+        "voice": "Orus",
+        "fallback_voice": "Charon",
+        "fx": "phone_rx",
+        "instructions": "Friendly-then-alarmed older male speaker heard over a mobile call."
+      },
+      "protag_casual": {
+        "voice": "Enceladus",
+        "fallback_voice": "Puck",
+        "fx": "warehouse_room",
+        "instructions": "Polite young adult male speaker casually replying in an echoey bay."
+      },
+      "protag_panic": {
+        "voice": "Enceladus",
+        "fallback_voice": "Kore",
+        "fx": "stall_reverb",
+        "max_per_char": 0.85,
+        "instructions": "Trembling, choked, terrified near-whisper inside a cramped tiled booth."
+      },
+      "master": {
+        "voice": "Gacrux",
+        "fallback_voice": "Charon",
+        "fx": "temple_reverb",
+        "max_per_char": 0.70,
+        "instructions": "Grave, solemn older temple elder delivering a measured warning."
+      }
+    }
   },
   "camera_moves": {
     "s01_a": [1.00, 1.08, 0.00, 0.00, 0.10, -0.10]
@@ -36,12 +81,30 @@ Place `<project_dir>/project.json` in your episode workspace before running `gen
     {
       "id": "s01",
       "cues": [
-        { "id": "s01_c1", "slot": "a", "text": "第一句控制十五字內，\n兩行換行剛好置中。" }
+        {
+          "id": "s01_c1",
+          "slot": "a",
+          "role": "narrator",
+          "text": "第一句控制十五字內，\n兩行換行剛好置中。"
+        },
+        {
+          "id": "s01_c2",
+          "slot": "b",
+          "role": "protag_panic",
+          "instructions": "Optional per-cue voice delivery override for this line only.",
+          "text": "「……救我，\n這裡好像有東西。」"
+        }
       ]
     }
   ]
 }
 ```
+
+### Multi-Voice `tts.roles` & Gentle `boil` Settings
+- **`boil` (Static Shot Line Boil)**: Set `{"amp": 0.35, "wavelength": 115.0, "hold_frames": 6}` for subtle, organic hand-drawn micro-tremor on static PNG shots without harsh jitter.
+- **Multi-Voice `tts.roles` (Backward Compatible)**: `tts.roles` and cue-level `"role"` / `"instructions"` are optional—single-voice episodes omitting them fall back cleanly to `tts.voice`, `tts.instructions`, and `"narrator"`.
+  - Supported `fx` presets (applied cleanly pre-stitch): `narrator`, `warehouse_room`, `phone_rx` (`320–3300Hz` telephone bandpass + compression), `stall_reverb` (tight tiled booth), `temple_reverb` (solemn hall), and `hall_far` (receding corridor/stairwell).
+  - Each role entry also accepts optional `fallback_voice`, `max_per_char` (default `0.48`), `noise_db`, and `min_silence_dur`.
 
 ### Supported `shot_fx` Presets
 - `porch_flicker`, `stair_flicker`: Erratic tungsten porch/stairwell lamp flicker.
@@ -71,6 +134,10 @@ Before Batch 1, lock 1-line recurring descriptions for:
 1. **Architecture**: exact facade, floor count, stair placement, door/utility fixtures.
 2. **Primary cast**: hair, glasses, signature coat/cardigan color so outfits stay locked across all 16 shots.
 
+> **Storybook Illustration vs. Photoreal POV Decision Box**
+> - **European Dark-Storybook Charcoal-Ink (`#0E1726` / `#D99B4E`) — Default**: Highest automated safety pass rate across image/video filters, strongest 16-shot face & wardrobe continuity via pale stylized faces and minimalist dot eyes, and safest framing for youth, campus, or Taiwanese urban legend adaptations (always describe stylized young characters explicitly as adults in their twenties during animation).
+> - **Realistic First-Person POV / Found-Footage — Specialized Only**: Use **only** when zero youth or human-portrait faces appear on camera—frame strictly through POV hands, trembling flashlight beams, doorways, mirrors without clear faces, and physical props so live-action face drift across 16 shots and minor-safety false positives are completely avoided.
+
 ---
 
 ## 3. Hitchcockian Safety Substitution Table
@@ -88,11 +155,16 @@ Never prompt graphic violence, self-harm, corpses, or religious provocation—sa
 
 ---
 
-## 4. Gemini Web Continuous-Chat Capture Protocol
+## 4. Google Flow FIRST Image Generation Protocol (`Nano Banana 2.1`, `9:16`, `1K`, `0` Credits)
 
-Generating all 16 shots inside **one fresh Gemini Web chat** preserves architecture & wardrobe continuity far better than isolated calls:
-1. Navigate to a brand-new chat (`https://gemini.google.com/app`), enable `Tools -> Create image`, set `Aspect ratio: 9:16`.
-2. Send prompts in **4 batches of 4** (`s01_a..s02_b`, `s03_a..s04_b`, `s05_a..s06_b`, `s07_a..s08_b`) in that same chat.
-3. Resize the browser viewport to `{ width: 801, height: 1011 }` before clicking each thumbnail into its full-screen lightbox and capturing a clean PNG screenshot (larger viewports can clip portrait lightboxes).
-4. Normalize every screenshot with `normalize_shot.py`, build `shots/contact_sheet.png`, and inspect every tile via `read_file` before video rendering.
-5. **Anti-bot safety rule**: If any web generator shows a CAPTCHA or unusual-activity check, stop automating that origin immediately—never bypass or retry bot checks. Fall back to `image-generator` subagent or another clean path.
+Generate all 16 stills inside **one clean Google Flow project** (`https://flow.google.com/` -> `Image` -> `Nano Banana 2.1` -> `9:16` -> `x1`) as the primary workflow:
+1. **Why Flow First**: Costs **`0` Flow credits**, outputs clean borderless **`1K` (`Original size`)** PNG/JPG downloads (zero lightbox cropping required), and keeps all 16 stills inside the same Flow project library so Phase 3.5 `Omni 1.2 Flash` animations pick Start Frames directly with **zero manual uploads**.
+2. **Browser Hygiene Rule**: Send **at most 2 shot prompts per browser subagent message** (e.g., `s01_a` + `s01_b`) so long visual prompts never suffer subagent context-compaction truncation.
+3. **Normalize & Inspect Gate**: Normalize every downloaded image via `normalize_shot.py` (`768×1376` RGB PNG), build `shots/contact_sheet.png` via `make_contact_sheet.py`, and inspect every tile via `read_file` before animating or rendering (regenerate any shot showing stray text, numbers, borders, or bright lower-25% clutter).
+4. **Fallback Engines (Use ONLY when Flow hits quota/limits)**:
+   - **Gemini Web Fallback**: Open one fresh chat (`https://gemini.google.com/app`, `Tools -> Create image`, `Aspect ratio: 9:16`), send 4 batches of 4 (`s01_a..s02_b`, ..., `s07_a..s08_b`), resize browser viewport to `{ width: 801, height: 1011 }`, and screenshot each full-screen lightbox cleanly.
+   - **Higgsfield `nano_banana_flash` Fallback**: First generate anchor shots (`s02_a`, `s02_b`, `s04_b`), then pass `--image <anchor_path>` for style/cast continuity:
+     ```bash
+     higgsfield generate create nano_banana_flash --aspect_ratio 9:16 --image "<anchor_path>" --prompt "<shot_prompt>" --wait --json
+     ```
+5. **Anti-Bot Safety Rule**: If any web generator shows a CAPTCHA, reCAPTCHA, or unusual-activity check, stop automating that origin immediately—never bypass or retry bot checks. Ask the user to verify in the browser pane or switch cleanly to a permitted fallback above.

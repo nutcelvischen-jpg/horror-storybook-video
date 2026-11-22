@@ -393,32 +393,21 @@ class AnimatedShotCache:
         n = len(frames_arr)
         clip_dur = n / 24.0
         dt = max(0.0, min(span, dt_sec))
+        play_dur = min(span, clip_dur * 1.65)
 
-        if span <= clip_dur * 1.45:
+        if span <= clip_dur * 1.65:
             u = dt / max(0.01, span)
             arr_rgb = self._sample_blended(frames_arr, u * (n - 1))
-            zoom = 1.00 + 0.03 * ease_in_out_cubic(u)
+            zoom = 1.00 + 0.04 * ease_in_out_cubic(u)
         else:
-            beat_len = span * 0.5
-            xf = 0.40
-            u1 = max(0.0, min(1.0, dt / beat_len))
-            u2 = max(0.0, min(1.0, (dt - beat_len) / beat_len))
-            z1 = 1.00 + 0.03 * ease_in_out_cubic(u1)
-            z2 = 1.05 + 0.04 * ease_in_out_cubic(u2)
-
-            if dt <= beat_len - xf:
-                arr_rgb = self._sample_blended(frames_arr, u1 * (n - 1))
-                zoom = z1
-            elif dt >= beat_len + xf:
-                arr_rgb = self._sample_blended(frames_arr, u2 * (n - 1))
-                zoom = z2
+            # Play once smoothly with natural tail deceleration, then hold final frame on creeping zoom (never replay twice)
+            if dt <= play_dur:
+                p = 1.0 - ((1.0 - (dt / max(0.01, play_dur))) ** 1.35)
+                pos_f = p * (n - 1)
             else:
-                w = (dt - (beat_len - xf)) / (2.0 * xf)
-                w = w * w * (3.0 - 2.0 * w)
-                f1 = self._sample_blended(frames_arr, u1 * (n - 1))
-                f2 = self._sample_blended(frames_arr, u2 * (n - 1))
-                arr_rgb = f1 * (1.0 - w) + f2 * w
-                zoom = z1 * (1.0 - w) + z2 * w
+                pos_f = float(n - 1)
+            arr_rgb = self._sample_blended(frames_arr, pos_f)
+            zoom = 1.00 + 0.09 * ease_in_out_cubic(dt / max(0.01, span))
 
         img = Image.fromarray(np.clip(arr_rgb, 0.0, 255.0).astype(np.uint8), mode="RGB")
         return img, zoom
